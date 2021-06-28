@@ -1,0 +1,118 @@
+# negative Poisson's ratio induced by free warped edges in graphene
+# molecular statics approach, i.e., energy minimization without temperature.
+
+#1 general
+units		metal
+dimension	3
+atom_style      atomic
+neighbor        0.3 bin
+
+#2 structure
+boundary	p p f
+read_data	data.dat
+
+variable	    lentinx equal 0.5
+variable	    x1 equal bound(all,xmin)+${lentinx}
+variable        x2 equal bound(all,xmax)-${lentinx}
+region          1 block INF ${x1} INF INF INF INF units box
+group           bot region 1
+region          2 block ${x2} INF INF INF INF INF units box
+group           top region 2
+group		edge union top bot
+group		mid subtract all edge
+
+group		graphene type 1
+
+#3 global variables
+variable	pressure equal 0.0
+variable	etol equal 1.0e-10
+variable    ftol equal 1.0e-10
+variable	deformstep equal 22 
+variable	dumpstep equal 100
+variable	thermalstep equal 100
+
+#4 potentials
+pair_style                  mlip mlip.ini
+pair_coeff                  * * 
+# by jwu
+
+
+#5 optimize at 0 K
+#velocity        all create 300 876848 dist gaussian
+compute         1 all stress/atom NULL                                           
+compute         2 all reduce sum c_1[1] c_1[2]                                   
+variable        CorVol equal ly*lx*3.35                                          
+variable        sigmaxx equal c_2[2]/(v_CorVol*10000)                            
+variable        px equal -pxx/10000                                              
+variable        p6 equal v_sigmaxx
+
+thermo          ${thermalstep}
+thermo_style    custom step temp press pxx pyy pzz pe temp v_px v_sigmaxx pe ke etotal
+dump            1 all custom 10 ovito.minimization id type x y z
+fix	         	1 all box/relax x 0.0 y 0.0
+min_modify   	line quadratic
+min_style	    cg
+minimize        ${etol} ${ftol} 1000000 1000000
+undump		    1
+unfix		    1
+
+#6 2nd round optimize, after 1st run, we find graphene is overcompressed by box/relax. Need to expand graphene manually.
+#dump            1 all custom 10 ovito.minimization2 id type x y z
+#variable	srate equal 1.0+0.0002
+#change_box	all x scale ${srate} remap units box
+#minimize        ${etol} ${ftol} 1000000 1000000
+#undump		1
+
+#6 output variables
+variable        xtop equal xcm(top,x)
+variable        xbot equal xcm(bot,x)
+variable        dx equal "v_xtop-v_xbot"
+variable	    dx0 equal ${dx}
+
+variable        lenx equal ${dx0}
+variable        lenz equal 3.35
+variable        Sxz equal ${lenx}*${lenz}
+
+variable        tmp equal ly
+variable        ly0 equal ${tmp}
+variable        tmp equal lx
+variable        lx0 equal ${tmp}
+variable        strain   equal "(ly-v_ly0)/v_ly0"
+variable        strainx  equal "(v_dx-v_dx0)/v_dx0"
+variable        strainx2 equal "(lx-v_lx0)/v_lx0"
+
+variable        amp equal bound(graphene,zmax)-bound(graphene,zmin)
+
+# after the 2nd optimization, energy becomes the lowest, but small initial stress occurs in the optimized structure
+variable	tmp equal -(pyy/10000)*(lx*lz/${Sxz})
+variable	stress0 equal ${tmp}
+
+variable        p1 equal v_strain
+variable        p2 equal "-(pyy/10000)*(lx*lz/v_Sxz)-v_stress0"
+variable        p3 equal v_amp
+variable        p4 equal v_strainx2
+variable        p5 equal v_strainx
+print	    	"filter = 0"
+print	    	"${p1} ${p2} ${p3} ${p4} ${p5}"
+compute         sp  all stress/atom NULL
+#7 deform
+dump            1 all custom ${dumpstep} ovito.deform id type x y z c_sp[1] c_sp[2] c_sp[3]
+fix             1 all box/relax x 0.0
+
+variable	i loop ${deformstep}
+label		loop_i
+   reset_timestep	0
+
+   if		"${i}<10" then &
+   		"change_box all y scale 1.007 remap units box" &
+   else		&
+   		"change_box all y scale 1.007 remap units box"
+
+   minimize	${etol} ${ftol} 1000000 1000000
+   print	"filter = ${i}"
+   print    "${p1} ${p2} ${p3} ${p4} ${p5}" file data.file
+   write_data data${i}.lmp 
+   next		i
+jump in.npr loop_i
+
+print		"# Job done, Sir! See you."
